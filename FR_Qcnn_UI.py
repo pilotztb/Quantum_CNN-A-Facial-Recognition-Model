@@ -189,43 +189,7 @@ def training():
                                        zoom_range=0.25,
                                        horizontal_flip=False)
 
-    valid_datagen = ImageDataGenerator(rescale=1./255.)
-
-    num_classes = 4
-    model_name = 'Face_trained_model_'+datetime.now().strftime("%H_%M_%S_")
-
-    model = Sequential(name = model_name)
-
-    model.add(Conv2D(64, kernel_size=3, activation='relu', input_shape=(base_value, base_value, 1)))
-    model.add(BatchNormalization()) #----------------
-    model.add(Conv2D(64, kernel_size=3, activation='relu'))
-    model.add(BatchNormalization()) #----------------
-    model.add(Conv2D(64, kernel_size=5, padding='same', activation='relu'))
-    model.add(BatchNormalization()) #----------------
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.2)) #----------------
-
-    model.add(Conv2D(128, kernel_size=3, activation='relu'))
-    model.add(BatchNormalization())
-    model.add(Conv2D(128, kernel_size=3, activation='relu'))
-    model.add(BatchNormalization())
-    model.add(Conv2D(128, kernel_size=5, padding='same', activation='relu'))
-    model.add(BatchNormalization())
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.2))
-
-    model.add(Conv2D(256, kernel_size=3, activation='relu'))
-    model.add(BatchNormalization())
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.2))
-
-    model.add(Flatten())
-    model.add(Dense(256))
-    model.add(BatchNormalization())
-    model.add(Dense(128))
-    model.add(BatchNormalization())
-    model.add(Dense(5, activation='softmax'))
-
+ 
     model.summary()
 
 
