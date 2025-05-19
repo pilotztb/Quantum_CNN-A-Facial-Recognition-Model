@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import clear_output
 from qiskit import QuantumCircuit
-from qiskit.algorithms.optimizers import COBYLA
+from qiskit_algorithms.optimizers import COBYLA
 from qiskit.circuit import ParameterVector
 from qiskit.circuit.library import ZFeatureMap
 from qiskit.quantum_info import SparsePauliOp

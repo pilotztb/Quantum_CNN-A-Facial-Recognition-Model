@@ -1,10 +1,15 @@
+# 主训练和测试脚本。它会：
+# 1.  加载CSV数据。
+# 2.  定义特征图 (`ZZFeatureMap`) 和一个由 `qcnn.py` 中的层构成的ansatz。
+# 3.  使用Qiskit的 `TwoLayerQNN` 和 `NeuralNetworkClassifier` 来构建和训练QCNN模型。
+# 4.  进行预测和评估
 import tensorflow as tf
 import json
 import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import clear_output
 from qiskit import QuantumCircuit
-from qiskit.algorithms.optimizers import COBYLA
+from qiskit_algorithms.optimizers import COBYLA
 from qiskit.circuit import ParameterVector
 from qiskit.circuit.library import ZFeatureMap
 from qiskit.quantum_info import SparsePauliOp

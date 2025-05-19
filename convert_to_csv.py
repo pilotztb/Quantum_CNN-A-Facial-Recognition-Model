@@ -1,3 +1,6 @@
+# 将data文件夹下的图像（可能需要预处理，如灰度化、调整大小）
+# 转换为像素值的CSV文件（如 Data.csv, Abinesh.csv, piolet0016.csv）。
+# 图像被展平成一行像素值。
 import matplotlib.image as image
 import os
 import pandas as pd
@@ -5,8 +8,8 @@ import cv2
 from tqdm import tqdm
 import numpy as np
 from PIL import Image
-path = 'Datasets/Nidharsh/'
-filename = 'Nidharsh.csv'
+path = 'Datasets/piolet0016/'
+filename = 'piolet0016.csv'
 cls = 8
 
 files = os.listdir(path)

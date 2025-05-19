@@ -1,308 +1,353 @@
-import tensorflow as tf
-
-from tensorflow.keras.layers import Conv2D
-from tensorflow.keras.layers import MaxPooling2D
-from tensorflow.keras.layers import BatchNormalization
-from keras.callbacks import ModelCheckpoint
-from tensorflow.keras.layers import ReLU
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dropout
-from tensorflow.keras.layers import Flatten
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.utils import to_categorical
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.optimizers import RMSprop
-from tensorflow.keras.callbacks import ReduceLROnPlateau, EarlyStopping
+# 用来训练一个经典的CNN模型
+# 以便将其性能与 FR_Qcnn.py 中实现的量子CNN模型进行比较
+# 将这个TensorFlow全部改为pytorch
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 from datetime import datetime
-
 import sys
+import os
 
+# 忽略警告 (与FR.py一致)
 if not sys.warnoptions:
     import warnings
     warnings.simplefilter("ignore")
 
-df = pd.read_csv('test.csv', index_col=0)
-X = df.iloc[:, :100*100].values.reshape(-1, 100, 100, 1) 
-y = df.iloc[:, -1].values
+# --- 1. 数据集类定义 ---
+class FaceDatasetCSV(Dataset):
+    def __init__(self, csv_file, transform=None):
+        self.df = pd.read_csv(csv_file, index_col=0)
+        # 图像数据是前100*100列
+        self.images = self.df.iloc[:, :100*100].values.astype(np.float32)
+        # 标签是最后一列
+        self.labels = self.df.iloc[:, -1].values.astype(np.int64)
+        self.transform = transform
 
-X.shape, y.shape
-y = to_categorical(y, num_classes= 1+ df.loc[:, 'class'].unique().shape[0])
+    def __len__(self):
+        return len(self.df)
 
-print(X.shape);
+    def __getitem__(self, idx):
+        image = self.images[idx].reshape(100, 100, 1) # Reshape to (H, W, C)
+        label = self.labels[idx]
 
-q = np.random.randint(len(X))
-plt.imshow(X[q,:,:], cmap='gray')
-plt.title(f'Label-{np.argmax(y[q])}')
-plt.axis('off')
-plt.show()
-
-
-X_train,X_test,y_train,y_test=train_test_split(X, y, random_state=42, test_size=0.15)
-print(f'Train Size - {X_train.shape}\nTest Size - {X_test.shape}')
-
-train_datagen = ImageDataGenerator(rescale=1./255.,
-                                   rotation_range=10,
-                                   width_shift_range=0.25,
-                                   height_shift_range=0.25,
-                                   shear_range=0.1,
-                                   zoom_range=0.25,
-                                   horizontal_flip=False)
-
-valid_datagen = ImageDataGenerator(rescale=1./255.)
-
-num_classes = 4
-model_name = 'Face_trained_model_'+datetime.now().strftime("%H_%M_%S_")
-
-model = Sequential(name = model_name)
-
-model.add(Conv2D(64, kernel_size=3, activation='relu', input_shape=(100, 100, 1)))
-model.add(BatchNormalization()) #----------------
-model.add(Conv2D(64, kernel_size=3, activation='relu'))
-model.add(BatchNormalization()) #----------------
-model.add(Conv2D(64, kernel_size=5, padding='same', activation='relu'))
-model.add(BatchNormalization()) #----------------
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Dropout(0.2)) #----------------
-
-model.add(Conv2D(128, kernel_size=3, activation='relu'))
-model.add(BatchNormalization())
-model.add(Conv2D(128, kernel_size=3, activation='relu'))
-model.add(BatchNormalization())
-model.add(Conv2D(128, kernel_size=5, padding='same', activation='relu'))
-model.add(BatchNormalization())
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Dropout(0.2))
-
-model.add(Conv2D(256, kernel_size=3, activation='relu'))
-model.add(BatchNormalization())
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Dropout(0.2))
-
-model.add(Flatten())
-model.add(Dense(256))
-model.add(BatchNormalization())
-model.add(Dense(128))
-model.add(BatchNormalization())
-model.add(Dense(5, activation='softmax'))
-
-model.summary()
+        if self.transform:
+            image = self.transform(image)
+        
+        # PyTorch CNN期望输入是 (C, H, W)
+        # 如果transform中没有 ToTensor()，则需要手动转换并调整维度
+        # 如果transform包含 ToTensor()，它会自动处理归一化到[0,1]和维度转换
+        if not isinstance(image, torch.Tensor): # 确保是Tensor
+            image = transforms.ToTensor()(image) # 这会将(H,W,C)变为(C,H,W)并归一化到[0,1]
+        elif image.shape[0] != 1 and image.shape[2] == 1: # 如果是(H,W,C)的Tensor
+             image = image.permute(2, 0, 1)
 
 
-learning_rate = 0.001
-optimizer = RMSprop(lr=learning_rate)
+        return image, label
 
-model.compile(loss='categorical_crossentropy',optimizer=optimizer,metrics=['accuracy'])
+# --- 2. 定义PyTorch CNN模型 ---
+# 模型结构尽量与FR.py中的Keras模型保持一致
+class FaceCNN(nn.Module):
+    def __init__(self, num_classes=5): # FR.py中最后Dense层是5个输出单元
+        super(FaceCNN, self).__init__()
+        self.model_name = 'Face_trained_model_pytorch_'+datetime.now().strftime("%H_%M_%S_")
 
-learning_rate_reduction = ReduceLROnPlateau(monitor='val_loss', 
-                                            patience=200,
-                                            verbose=1,
-                                            factor=0.2)
+        # Keras: model.add(Conv2D(64, kernel_size=3, activation='relu', input_shape=(100, 100, 1)))
+        # PyTorch: nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0)
+        # Keras的 'relu' 激活通常在层定义之后作为单独的激活层或在forward中调用
+        # Keras的 input_shape 在第一层指定，PyTorch的输入形状在forward时体现
 
-ch = ModelCheckpoint('models/'+model_name+'.h5', monitor='val_acc', verbose=0, save_best_only=True, mode='max')
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1), # padding=1使3x3卷积后尺寸不变
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=5, stride=1, padding=2), # padding=2使5x5卷积后尺寸不变
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), # (100,100) -> (50,50)
+            nn.Dropout(0.2)
+        )
 
-es = EarlyStopping(monitor='val_loss', mode='min', verbose=0, patience=200)
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), # (50,50) -> (25,25)
+            nn.Dropout(0.2)
+        )
 
-tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs/"+datetime.now().strftime("%Y%m%d-%H%M%S"))
+        self.conv_block3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), # (25,25) -> (12,12) (如果25/2，向下取整)
+                                                    # Keras的MaxPooling默认向下取整，PyTorch也是
+                                                    # 25x25 -> MaxPool2d(2) -> 12x12
+            nn.Dropout(0.2)
+        )
+
+        # Flatten操作在forward中进行
+        # 计算Flatten之后的维度: 256通道 * 12 * 12 (基于输入100x100，三次2x2池化)
+        # 100 -> 50 -> 25 -> 12
+        self.fc_block = nn.Sequential(
+            nn.Linear(256 * 12 * 12, 256),
+            nn.BatchNorm1d(256), # 注意是BatchNorm1d因为是全连接层
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Linear(128, num_classes) # 输出层，PyTorch的CrossEntropyLoss内置了softmax
+        )
+
+    def forward(self, x):
+        x = self.conv_block1(x)
+        x = self.conv_block2(x)
+        x = self.conv_block3(x)
+        x = x.view(x.size(0), -1) # Flatten. x.size(0)是batch_size
+        x = self.fc_block(x)
+        return x
+
+# --- 3. 数据加载和预处理 ---
+# 定义数据变换 (FR.py中的ImageDataGenerator的rescale等效于ToTensor)
+# FR.py中的数据增强比较复杂，这里先用基础的ToTensor和Normalize
+# 如果要完全对应FR.py中的增强，需要使用transforms.RandomRotation, RandomAffine等
+train_transforms = transforms.Compose([
+    # ToTensor会把PIL Image或者numpy.ndarray (H x W x C) 从范围 [0, 255] 转换成 torch.FloatTensor (C x H x W) 范围 [0.0, 1.0]
+    # 我们的数据已经是numpy (H,W,C) 且值在0-1之间(如果CSV里是0-255，ToTensor会处理；如果是0-1，它也接受)
+    # FaceDatasetCSV中已经reshape成(H,W,C)并转为float32
+    # transforms.ToTensor(), # FaceDatasetCSV的__getitem__中已经处理
+    transforms.Normalize(mean=[0.5], std=[0.5]) # 假设是单通道灰度图，均值0.5，标准差0.5
+                                                # 这个需要根据你的数据实际分布来定，或者像Keras一样只做rescale (ToTensor已做)
+])
+
+val_transforms = transforms.Compose([
+    # transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+# 加载数据 (假设test.csv就是我们的总数据集)
+# 注意：FR.py 中是从 test.csv 加载，然后自己划分 train/test。这里我们也这样做。
+# 如果你的 test.csv 仅仅是测试集，你需要一个包含训练数据和标签的 train.csv
+csv_file_path = 'test.csv' # 请确保这个文件存在且格式正确
+if not os.path.exists(csv_file_path):
+    print(f"错误: CSV文件 '{csv_file_path}' 不存在。请提供正确的数据文件路径。")
+    sys.exit()
+
+full_dataset_df = pd.read_csv(csv_file_path, index_col=0)
+X_all = full_dataset_df.iloc[:, :100*100].values.astype(np.float32)
+y_all = full_dataset_df.iloc[:, -1].values.astype(np.int64)
+
+# 划分训练集和验证集
+X_train_np, X_val_np, y_train_np, y_val_np = train_test_split(X_all, y_all, random_state=42, test_size=0.15, stratify=y_all)
 
 
-epochs = 50
-batch_size = 256
-history = model.fit_generator(train_datagen.flow(X_train, y_train, batch_size=batch_size),
-                              steps_per_epoch= X_train.shape[0]//batch_size,
-                              epochs=epochs,
-                              validation_data=valid_datagen.flow(X_test, y_test),
-                              validation_steps=50,
-                              verbose = 1,
-                              callbacks=[learning_rate_reduction, es, ch, tensorboard_callback])
-							  
-loss, acc = model.evaluate(valid_datagen.flow(X_test, y_test))
+# 自定义Dataset类用于NumPy数组
+class NumpyImageDataset(Dataset):
+    def __init__(self, images_np, labels_np, transform=None):
+        self.images = images_np
+        self.labels = labels_np
+        self.transform = transform
 
-print(f'Loss: {loss}\nAccuracy: {acc*100}')
+    def __len__(self):
+        return len(self.labels)
 
-# Plot training & test accuracy values
-plt.plot(history.history['acc'])
-plt.plot(history.history['val_acc'])
-plt.title('Model accuracy')
+    def __getitem__(self, idx):
+        image = self.images[idx].reshape(100, 100, 1) # (H, W, C)
+        label = self.labels[idx]
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        # 确保输出是 (C, H, W) 的Tensor
+        if not isinstance(image, torch.Tensor):
+            image = transforms.ToTensor()(image) # 归一化到[0,1]并转为 (C,H,W)
+        elif image.shape[0] != 1 and image.shape[2] == 1: # 如果是(H,W,C)的Tensor
+             image = image.permute(2, 0, 1)
+        
+        return image, label
+
+train_dataset = NumpyImageDataset(X_train_np, y_train_np, transform=train_transforms)
+val_dataset = NumpyImageDataset(X_val_np, y_val_np, transform=val_transforms)
+
+
+batch_size = 256 # 与FR.py一致
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+
+# --- 4. 模型实例化、损失函数、优化器 ---
+# num_classes 需要根据你的数据集确定。FR.py中最后是Dense(5, ...), 但数据加载时用了 num_classes=4，
+# 并且to_categorical时 num_classes = 1 + df.loc[:, 'class'].unique().shape[0]
+# 这里我们假设 num_classes 与FR.py中的Dense(5,...)一致
+num_actual_classes = len(np.unique(y_all))
+print(f"数据集中实际的类别数量: {num_actual_classes}")
+# 通常 num_classes 参数应该等于这个值。FR.py 中 `to_categorical` 的 `num_classes` 参数可能需要检查。
+# 如果 y_all 的标签是从0开始的，例如0,1,2,3,4，那么num_actual_classes就是5。
+# 我们这里直接使用FR.py模型定义中的5
+model_pytorch = FaceCNN(num_classes=5)
+
+
+criterion = nn.CrossEntropyLoss() # 包含了Softmax
+optimizer = optim.RMSprop(model_pytorch.parameters(), lr=0.001) # 与FR.py一致
+# 学习率调度器 (ReduceLROnPlateau)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=5, verbose=True) # FR.py的patience是200，这里改小一点以便更快看到效果
+
+# --- 5. 训练循环 ---
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"使用设备: {device}")
+model_pytorch.to(device)
+
+epochs = 50 # 与FR.py一致 (FR.py的patience=200，epochs=50可能跑不完patience)
+best_val_accuracy = 0.0
+patience_counter = 0 # 用于早停
+early_stopping_patience = 10 # FR.py的patience是200，这里改小一点
+
+# 创建保存模型的文件夹
+if not os.path.exists('models_pytorch'):
+    os.makedirs('models_pytorch')
+
+train_losses = []
+val_losses = []
+train_accuracies = []
+val_accuracies = []
+
+for epoch in range(epochs):
+    model_pytorch.train() # 设置为训练模式
+    running_loss = 0.0
+    correct_train = 0
+    total_train = 0
+
+    for i, (inputs, labels) in enumerate(train_loader):
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model_pytorch(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * inputs.size(0)
+        _, predicted = torch.max(outputs.data, 1)
+        total_train += labels.size(0)
+        correct_train += (predicted == labels).sum().item()
+
+    epoch_train_loss = running_loss / len(train_loader.dataset)
+    epoch_train_acc = correct_train / total_train
+    train_losses.append(epoch_train_loss)
+    train_accuracies.append(epoch_train_acc)
+
+    # --- 验证 ---
+    model_pytorch.eval() # 设置为评估模式
+    val_running_loss = 0.0
+    correct_val = 0
+    total_val = 0
+    with torch.no_grad(): # 评估时不需要计算梯度
+        for inputs, labels in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model_pytorch(inputs)
+            loss = criterion(outputs, labels)
+            val_running_loss += loss.item() * inputs.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            total_val += labels.size(0)
+            correct_val += (predicted == labels).sum().item()
+
+    epoch_val_loss = val_running_loss / len(val_loader.dataset)
+    epoch_val_acc = correct_val / total_val
+    val_losses.append(epoch_val_loss)
+    val_accuracies.append(epoch_val_acc)
+
+    print(f"Epoch [{epoch+1}/{epochs}], "
+          f"Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}, "
+          f"Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}")
+
+    scheduler.step(epoch_val_loss) # 更新学习率
+
+    # 模型保存 (类似ModelCheckpoint)
+    if epoch_val_acc > best_val_accuracy:
+        best_val_accuracy = epoch_val_acc
+        torch.save(model_pytorch.state_dict(), os.path.join('models_pytorch', model_pytorch.model_name + '.pth'))
+        print(f"模型已保存，最佳验证准确率: {best_val_accuracy:.4f}")
+        patience_counter = 0 # 重置早停计数器
+    else:
+        patience_counter += 1
+
+    # 早停 (类似EarlyStopping)
+    if patience_counter >= early_stopping_patience:
+        print("早停触发！")
+        break
+
+# --- 6. 评估和可视化 (与FR.py类似) ---
+# 加载最佳模型进行最终评估
+if os.path.exists(os.path.join('models_pytorch', model_pytorch.model_name + '.pth')):
+    model_pytorch.load_state_dict(torch.load(os.path.join('models_pytorch', model_pytorch.model_name + '.pth')))
+    print("已加载最佳模型进行最终评估。")
+
+model_pytorch.eval()
+all_preds = []
+all_labels = []
+with torch.no_grad():
+    for inputs, labels in val_loader: # 使用验证集进行最终评估
+        inputs, labels = inputs.to(device), labels.to(device)
+        outputs = model_pytorch(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        all_preds.extend(predicted.cpu().numpy())
+        all_labels.extend(labels.cpu().numpy())
+
+final_accuracy = accuracy_score(all_labels, all_preds)
+print(f"\n最终验证集准确率 (使用最佳模型): {final_accuracy*100:.2f}%")
+print("\n分类报告:")
+# 注意：target_names 需要根据你的类别实际名称来设置
+# 如果类别是0,1,2,3,4，可以这样：
+unique_labels = sorted(np.unique(y_all))
+target_names_str = [str(label) for label in unique_labels]
+print(classification_report(all_labels, all_preds, target_names=target_names_str if len(target_names_str) == num_actual_classes else None))
+
+print("\n混淆矩阵:")
+cm = confusion_matrix(all_labels, all_preds)
+print(cm)
+# 可视化混淆矩阵 (可选，需要seaborn)
+# import seaborn as sns
+# plt.figure(figsize=(8,6))
+# sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=target_names_str, yticklabels=target_names_str)
+# plt.xlabel('Predicted')
+# plt.ylabel('Actual')
+# plt.title('Confusion Matrix')
+# plt.show()
+
+
+# 绘制训练过程中的准确率和损失曲线
+plt.figure(figsize=(12, 4))
+plt.subplot(1, 2, 1)
+plt.plot(train_accuracies, label='Train Accuracy')
+plt.plot(val_accuracies, label='Validation Accuracy')
+plt.title('Model Accuracy')
+plt.xlabel('Epoch')
 plt.ylabel('Accuracy')
-plt.xlabel('Epoch')
-plt.legend(['Train', 'Test'], loc='upper left')
-plt.show()
+plt.legend()
 
-# Plot training & test loss values
-plt.plot(history.history['loss'])
-plt.plot(history.history['val_loss'])
-plt.title('Model loss')
+plt.subplot(1, 2, 2)
+plt.plot(train_losses, label='Train Loss')
+plt.plot(val_losses, label='Validation Loss')
+plt.title('Model Loss')
+plt.xlabel('Epoch')
 plt.ylabel('Loss')
-plt.xlabel('Epoch')
-plt.legend(['Train', 'Test'], loc='upper left')
+plt.legend()
+plt.tight_layout()
 plt.show()
 
-from sklearn.metrics import classification_report
-print(classification_report(np.argmax(y_test, axis=1), np.argmax(model.predict(X_test),axis=1)))
-
-
-from sklearn.metrics import confusion_matrix,f1_score, precision_score, recall_score
-import seaborn as sn
-y_true = np.argmax(y_test, axis=1)
-y_pred = np.argmax(model.predict(X_test), axis=1)
-data = confusion_matrix(y_true, y_pred)
-df_cm = pd.DataFrame(data, columns=np.unique(y_true), index = np.unique(y_true))
-df_cm.index.name = 'Actual'
-df_cm.columns.name = 'Predicted'
-plt.figure(figsize = (10,7))
-sn.set(font_scale=1.4)#for label size
-sn.heatmap(df_cm, cmap="Blues", annot=True,annot_kws={"size": 16})# font size
-
-print(f1_score(y_true, y_pred, average="macro")*100)
-print(precision_score(y_true, y_pred, average="macro")*100)
-print(recall_score(y_true, y_pred, average="macro")*100) 
-
-from sklearn.metrics import confusion_matrix, accuracy_score, classification_report, cohen_kappa_score
-def AA_andEachClassAccuracy(confusion_matrix):
-    from operator import truediv
-    counter = confusion_matrix.shape[0]
-    list_diag = np.diag(confusion_matrix)
-    list_raw_sum = np.sum(confusion_matrix, axis=1)
-    each_acc = np.nan_to_num(truediv(list_diag, list_raw_sum))
-    average_acc = np.mean(each_acc)
-    return each_acc, average_acc
-
-def reports (nn_model, X_test,y_test):
-    #start = time.time()
-    Y_pred = nn_model.predict(X_test)
-    y_pred = np.argmax(Y_pred, axis=1)
-    #end = time.time()
-    #print(end - start
-    
-    classification = classification_report(np.argmax(y_test, axis=1), y_pred, target_names=['1', '2','3','4'])
-    target_names=['1', '2','3','4']
-    oa = accuracy_score(np.argmax(y_test, axis=1), y_pred)
-    confusion = confusion_matrix(np.argmax(y_test, axis=1), y_pred)
-    each_acc, aa = AA_andEachClassAccuracy(confusion)
-    kappa = cohen_kappa_score(np.argmax(y_test, axis=1), y_pred)
-    score = nn_model.evaluate(X_test, y_test, batch_size=32)
-    Test_Loss =  score[0]
-    Test_accuracy = score[1]*100
-    
-    return classification, confusion, Test_Loss, Test_accuracy, oa*100, '\n'.join([' : '.join(map(str, i)) for i in zip(target_names, each_acc*100)]), aa*100, kappa*100
-
-
-
-classification, confusion, Test_loss, Test_accuracy, oa, each_acc, aa, kappa = reports(model, X_test, y_test)
-classification = str(classification)
-confusion = str(confusion)
-file_name = "Face_Classification_report.txt"
-
-with open(file_name, 'w') as x_file:
-    x_file.write('\nTest loss: {}%'.format(Test_loss))
-    x_file.write('\n')
-    x_file.write('Test accuracy: {}%'.format(Test_accuracy))
-    x_file.write('\n')
-    x_file.write('\n')
-    x_file.write('Kappa accuracy: {}%'.format(kappa))
-    x_file.write('\n')
-    x_file.write('Overall accuracy: {}%'.format(oa))
-    x_file.write('\n')
-    x_file.write('Average accuracy: {}%'.format(aa))
-    x_file.write('\n\n')
-    x_file.write('Classwise Accuracy: \n{}'.format(each_acc))
-    x_file.write('\n\n')
-    x_file.write('Classification Report:\n{}'.format(classification))
-    x_file.write('\n\n')
-    x_file.write('Confusion Matrix:\n{}'.format(confusion))
-	
-rand_n = np.random.randint(X_test.shape[0])
-plt.imshow(X_test[rand_n][:, :, 0], cmap='gray')
-plt.title(f'Actual:{np.argmax(y_test[rand_n])} Predicted: {np.argmax(model.predict(X_test[rand_n].reshape(-1, 100, 100, 1)))}');
-plt.axis('off')
-plt.show()
-
-def plot_predictions(r=5 ,c =5):
-  w=10
-  h=10
-  fig=plt.figure(figsize=(12, 12))
-  columns = c
-  rows = r
-  for i in range(1, columns*rows +1):
-      fig.add_subplot(rows, columns, i)
-      rand_n = np.random.randint(X_test.shape[0])
-      plt.imshow(X_test[rand_n][:, :, 0], cmap='gray')
-      plt.title(f'Actual:{np.argmax(y_test[rand_n])} Predicted: {np.argmax(model.predict(X_test[rand_n].reshape(-1, 100, 100, 1)))}');
-      plt.axis('off')
-  plt.show()
-  
-model.save(model_name+".h5")
-from tensorflow.keras.models import load_model
-model1 = load_model('models/Face_trained_model_04_12_16.h5')
-
-loss, acc = model1.evaluate(valid_datagen.flow(X_test, y_test))
-
-from sklearn.metrics import classification_report
-
-print(classification_report(np.argmax(y_test, axis=1), np.argmax(model1.predict(X_test), axis=1)))
-
-activations = activation_model.predict(X_test[28].reshape(-1, 100, 100, 1))
-
-
-layer_names = []
-for layer in model1.layers[:20]:
-    layer_names.append(layer.name) # Names of the layers, so you can have them as part of your plot
-images_per_row = 16
-for layer_name, layer_activation in zip(layer_names, activations): # Displays the feature maps
-    n_features = layer_activation.shape[-1] # Number of features in the feature map
-    size = layer_activation.shape[1] #The feature map has shape (1, size, size, n_features).
-    n_cols = n_features // images_per_row # Tiles the activation channels in this matrix
-    display_grid = np.zeros((size * n_cols, images_per_row * size))
-    for col in range(n_cols): # Tiles each filter into a big horizontal grid
-        for row in range(images_per_row):
-            channel_image = layer_activation[0,
-                                             :, :,
-                                             col * images_per_row + row]
-            channel_image -= channel_image.mean() # Post-processes the feature to make it visually palatable
-            channel_image /= channel_image.std()
-            channel_image *= 64
-            channel_image += 128
-            channel_image = np.clip(channel_image, 0, 255).astype('uint8')
-            display_grid[col * size : (col + 1) * size, # Displays the grid
-                         row * size : (row + 1) * size] = channel_image
-    scale = 1. / size
-    plt.figure(figsize=(scale * display_grid.shape[1],
-                        scale * display_grid.shape[0]))
-    plt.title(layer_name)
-    plt.grid(False)
-    plt.axis('off')
-    plt.imshow(display_grid, aspect='auto', cmap='gray')
-    plt.savefig(layer_name+'.png')
-	
-def plot_aug(data,r=5 , c =5):
-  w=10
-  h=10
-  fig=plt.figure(figsize=(12, 12))
-  columns = c
-  rows = r
-  for i in range(1, columns*rows +1):
-      fig.add_subplot(rows, columns, i)
-      rand_n = np.random.randint(data.shape[0])
-      plt.imshow(data[rand_n], cmap='gray')
-      # plt.title(f'Actual:{np.argmax(y_test[rand_n])} Predicted: {np.argmax(model.predict(X_test[rand_n].reshape(-1, 100, 100, 1)))}');
-      plt.axis('off')
-  plt.show()
-  
-
-data = ImageDataGenerator(rescale=1./255.,
-                                  #  rotation_range=10,
-                                  #  width_shift_range=0.25,
-                                  #  height_shift_range=0.25,
-                                  #  shear_range=0.1,
-                                   zoom_range=0.25,
-                                  #  horizontal_flip=False
-                          ).flow(X_train, y_train)
-au_x, au_y = data.next()[0].reshape(32,100,100), data.next()[1]
-au_x.shape, au_y.shape
-plot_aug(au_x)
-
+print("PyTorch版本CNN训练和评估完成。")
