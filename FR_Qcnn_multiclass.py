@@ -1,13 +1,14 @@
-# FR_Qcnn_multiclass.py (修改版，尝试实现自定义交叉熵，并包含跳过已训练CNN的逻辑)
-
+# FR_Qcnn_multiclass.py (修改版，调整QNN电路参数)
+# 修改：提高特征维度，num_qnn_input_features
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # 必须在导入pyplot之前
 import matplotlib.pyplot as plt
 import os
 import sys
 import logging
 from datetime import datetime
 import json # 用于加载标签映射
+import numpy as np # 确保导入numpy
 
 # --- 日志记录设置 ---
 log_folder = "log_multiclass" # 新的日志文件夹
@@ -27,7 +28,7 @@ logging.basicConfig(
 
 import tensorflow as tf
 from qiskit import QuantumCircuit
-from qiskit_algorithms.optimizers import COBYLA
+from qiskit_algorithms.optimizers import COBYLA # 或者其他优化器如 SPSA
 from qiskit.circuit.library import ZZFeatureMap, RealAmplitudes
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.utils import algorithm_globals
@@ -43,10 +44,9 @@ from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, Early
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.optimizers import RMSprop
+# from tensorflow.keras.optimizers import RMSprop # Keras 3 中路径已更改
 
 import pandas as pd
-import numpy as np
 
 if not sys.warnoptions:
     import warnings
@@ -55,9 +55,10 @@ if not sys.warnoptions:
 algorithm_globals.random_seed = 1
 
 # --- 全局配置 ---
-FORCE_RETRAIN_CNN = False
+# 如果CNN特征提取部分已经满意，可以设置为False以节省时间
+FORCE_RETRAIN_CNN = True
 
-num_qnn_input_features = 8
+num_qnn_input_features = 64
 logging.info(f"QNN将使用 {num_qnn_input_features} 个输入特征 (量子比特)。")
 output_image_folder = "所有输出图像_multiclass" # 新的图像输出文件夹
 if not os.path.exists(output_image_folder):
@@ -74,77 +75,6 @@ def stable_softmax(x, axis=-1):
     """稳定的Softmax函数，避免数值溢出。"""
     e_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
     return e_x / np.sum(e_x, axis=axis, keepdims=True)
-
-# === 自定义多类别交叉熵损失目标函数 ===
-class CustomMultiClassCrossEntropyLoss(ObjectiveFunction):
-    def __init__(self, num_classes, neural_network):
-        # super().__init__()
-        self._num_classes = num_classes
-        self._neural_network = neural_network
-        self._X = None  # 将由 get_objective 设置
-        self._y = None  # 将由 get_objective 设置 (期望是整数标签 0 to N-1)
-        self._epsilon = 1e-15 # 用于裁剪概率值，避免log(0)
-
-    def objective(self, weights: np.ndarray) -> float:
-        # 1. 获取QNN的原始输出 (通常是期望值 [-1, 1])
-        raw_qnn_outputs = self._neural_network.forward(self._X, weights)
-        # raw_qnn_outputs 形状应为 (num_samples, num_classes)
-
-        # 2. 应用 interpret 函数 (例如 (x+1)/2) 将输出映射到 [0, 1] 作为伪概率或 logits
-        # EstimatorQNN 默认不包含 interpret，NeuralNetworkClassifier 会处理
-        # 但我们在这里直接使用 EstimatorQNN，所以需要自己处理或确保其输出适合 softmax
-        # 假设 EstimatorQNN 的输出已经是期望值，可以被视为 softmax 的 logits
-        # 或者如果 EstimatorQNN 内部已经有 interpret，那么 raw_qnn_outputs 就是 [0,1] 的值
-        # 为了更通用，我们假设 raw_qnn_outputs 是可以直接输入到 softmax 的值（可能是 logits）
-        # 如果它们是 [-1,1] 的期望值，直接用作 softmax 的输入也是一种常见做法，
-        # 或者先进行 interpret (x+1)/2 映射到 [0,1]
-        
-        # 这里我们假设 raw_qnn_outputs 可以直接作为 softmax 的输入 (logits-like)
-        # 或者，如果您希望严格基于 interpret 后的概率：
-        # interpreted_outputs = (raw_qnn_outputs + 1) / 2.0 # 假设原始输出是[-1,1]的期望值
-
-        # 3. 应用Softmax函数得到每个类别的概率
-        # probabilities = stable_softmax(interpreted_outputs, axis=1) # 如果使用了 interpret
-        probabilities = stable_softmax(raw_qnn_outputs, axis=1) # 直接对QNN输出（可能为期望值）做softmax
-
-
-        # 4. 裁剪概率以避免 log(0)
-        probabilities = np.clip(probabilities, self._epsilon, 1. - self._epsilon)
-
-        # 5. 计算交叉熵损失
-        num_samples = self._X.shape[0]
-        # self._y 应该是整数标签 (0, 1, ..., num_classes-1)
-        # 我们需要从 probabilities 中选取对应真实类别的概率
-        log_likelihood = -np.log(probabilities[np.arange(num_samples), self._y])
-        loss = np.sum(log_likelihood) / num_samples
-        
-        return loss
-
-    def gradient(self, weights: np.ndarray) -> np.ndarray:
-        # 如果优化器需要梯度 (例如 SPSA, ADAM)，则需要实现此方法
-        # 对于 COBYLA，此方法不会被调用
-        # 实现梯度计算（如参数位移法）会比较复杂
-        logging.warning("CustomMultiClassCrossEntropyLoss 的梯度计算未实现。COBYLA优化器不需要它。")
-        # return np.zeros_like(weights) # 或者 raise NotImplementedError
-        # 为了让某些检查通过，有时需要返回一个与权重形状相同的数组
-        if self._neural_network.input_gradients: # 检查QNN是否配置了梯度支持
-            grad = self._neural_network.backward(self._X, weights)
-            # backward的输出可能需要进一步处理以匹配损失函数的梯度
-            # 这部分比较复杂，暂时跳过精确实现
-            # grad[0] 是输入的梯度，grad[1] 是权重的梯度
-            if grad[1] is not None:
-                 return grad[1].flatten() # 假设我们只需要权重的梯度
-            else:
-                 return np.zeros_like(weights) # 如果QNN不返回权重梯度
-        else:
-            return np.zeros_like(weights) # 或者 raise NotImplementedError
-
-
-    def set_neural_network(self, neural_network): # Qiskit ML 0.7+ 可能需要
-        self._neural_network = neural_network
-
-    # get_objective 方法在基类中已实现，它会设置 self._X 和 self._y
-# === 自定义损失函数结束 ===
 
 
 # === 阶段一：加载多分类人脸数据集 ===
@@ -281,7 +211,8 @@ if model is None:
     model.add(Dense(256, activation='relu'))
     model.add(BatchNormalization())
     model.add(Dropout(0.4))
-    model.add(Dense(num_qnn_input_features, activation='relu', name='dense_for_qnn_features'))
+    # 使用 tanh 激活函数
+    model.add(Dense(num_qnn_input_features, activation='tanh', name='dense_for_qnn_features'))
     model.add(BatchNormalization())
     model.add(Dense(num_unique_classes, activation='softmax', name='cnn_output_layer'))
 
@@ -298,7 +229,9 @@ if model is None:
         sys.stdout = original_stdout_cnn_summary
 
     learning_rate_cnn = 0.001
-    optimizer_cnn = RMSprop(learning_rate=learning_rate_cnn)
+    # Keras 3 直接使用 tf.keras.optimizers.RMSprop
+    optimizer_cnn = tf.keras.optimizers.RMSprop(learning_rate=learning_rate_cnn)
+
     model.compile(loss='categorical_crossentropy', optimizer=optimizer_cnn, metrics=['accuracy'])
 
     ch_cnn = ModelCheckpoint(checkpoint_path_cnn_to_load_or_save, monitor='val_accuracy', verbose=1, save_best_only=True, mode='max')
@@ -307,7 +240,7 @@ if model is None:
     callbacks_list_cnn = [ch_cnn, es_cnn, learning_rate_reduction_cnn]
 
     logging.info("开始训练经典CNN模型 (多分类，用于直接提取低维特征)...")
-    epochs_cnn = 60
+    epochs_cnn = 200
     batch_size_cnn = 32
     if len(X_train_csv) < batch_size_cnn :
         batch_size_cnn = max(1, len(X_train_csv) // 4)
@@ -325,7 +258,6 @@ if model is None:
 
     history_path_to_save = checkpoint_path_cnn_to_load_or_save.replace(".keras", "_history.json")
     try:
-        # Ensure history values are JSON serializable (convert numpy types to Python types)
         serializable_history = {k: [float(val) for val in v_list] for k, v_list in history_cnn_dict.items()}
         with open(history_path_to_save, 'w', encoding='utf-8') as f_hist_save:
             json.dump(serializable_history, f_hist_save)
@@ -354,7 +286,7 @@ if history_cnn_dict:
         plt.close()
 
         plt.figure(figsize=(12, 5))
-        plt.subplot(1, 2, 2) # Corrected subplot for side-by-side
+        plt.subplot(1, 2, 2)
         plt.plot(history_cnn_dict['loss'], label='训练损失')
         if 'val_loss' in history_cnn_dict:
             plt.plot(history_cnn_dict['val_loss'], label='验证损失')
@@ -378,18 +310,22 @@ feature_extractor_model = None
 logging.info(f"尝试从模型 '{model.name}' 创建特征提取器，目标层: '{feature_extractor_layer_name}'")
 try:
     fe_input = tf.keras.Input(shape=(100, 100, 1), name="feature_extractor_new_input")
-    x_fe = fe_input
+    
+    temp_model = tf.keras.models.clone_model(model)
+    temp_model.build((None, 100, 100, 1)) 
+    temp_model.set_weights(model.get_weights())
+
+    current_output = fe_input
     found_fe_target_layer = False
     target_fe_output = None
-
-    for layer_in_model in model.layers:
-        x_fe = layer_in_model(x_fe)
+    for layer_in_model in temp_model.layers:
+        current_output = layer_in_model(current_output)
         if layer_in_model.name == feature_extractor_layer_name:
-            target_fe_output = x_fe
+            target_fe_output = current_output
             found_fe_target_layer = True
             logging.info(f"已为特征提取器连接到目标层 '{layer_in_model.name}'。")
             break
-
+    
     if not found_fe_target_layer or target_fe_output is None:
         logging.error(f"错误: 未能在模型 '{model.name}' 中找到或连接到名为 '{feature_extractor_layer_name}' 的层以创建特征提取器。")
         logging.info(f"可用层在模型 '{model.name}': {[layer.name for layer in model.layers]}")
@@ -423,13 +359,14 @@ logging.info(f"提取到的低维深度特征形状: {all_face_low_dim_features.
 
 # === 阶段三：对CNN输出的低维特征进行缩放 ===
 logging.info("\n--- 阶段三：对CNN输出的低维特征进行缩放 ---")
-scaler = MinMaxScaler(feature_range=(0, 1)) # 或者 (-1, 1) 如果QNN期望这个范围
+# 使用 tanh 的输出特性缩放到 [0, np.pi]
+scaler = MinMaxScaler(feature_range=(0, np.pi)) 
 scaled_features_for_qnn = scaler.fit_transform(all_face_low_dim_features)
 logging.info(f"CNN直接输出并缩放后的特征形状: {scaled_features_for_qnn.shape}")
 
 # === 阶段四：准备QNN的标签并分割数据 ===
 logging.info("\n--- 阶段四：准备QNN的标签并分割数据 ---")
-y_qnn_target_labels = y_labels_from_csv # 整数标签
+y_qnn_target_labels = y_labels_from_csv 
 logging.info(f"QNN目标标签示例 (整数 0 to N-1, 前20个): {y_qnn_target_labels[:20]}")
 X_qnn_train, X_qnn_test, y_qnn_train, y_qnn_test = train_test_split(
     scaled_features_for_qnn, y_qnn_target_labels, test_size=0.3,
@@ -442,8 +379,9 @@ logging.info(f"QNN测试数据形状: X={X_qnn_test.shape}, y={y_qnn_test.shape}
 logging.info("\n--- 阶段五：定义和构建QNN的量子电路 (多分类) ---")
 num_qnn_qubits = num_qnn_input_features
 
-feature_map = ZZFeatureMap(feature_dimension=num_qnn_qubits, reps=2, entanglement='linear')
-feature_map.name = "ZZFeatureMap_MultiClass"
+# 修改：增加 ZZFeatureMap 的 reps
+feature_map = ZZFeatureMap(feature_dimension=num_qnn_qubits, reps=3, entanglement='linear') # reps 从 2 改为 3
+feature_map.name = "ZZFeatureMap_MultiClass_reps3" # 更新名称以反映更改
 if num_qnn_qubits <= 10:
     try:
         fig_fm, ax_fm = plt.subplots()
@@ -456,9 +394,9 @@ if num_qnn_qubits <= 10:
 else:
     logging.info(f"QNN 特征映射 ({feature_map.name}) 已创建 (量子比特数 {num_qnn_qubits} 较大，跳过分解绘图)。")
 
-
-ansatz = RealAmplitudes(num_qnn_qubits, reps=4, entanglement='full')
-ansatz.name = "RealAmplitudes_MultiClass"
+# 修改：增加 RealAmplitudes 的 reps
+ansatz = RealAmplitudes(num_qnn_qubits, reps=5, entanglement='full') # reps 从 4 改为 5
+ansatz.name = "RealAmplitudes_MultiClass_reps5" # 更新名称以反映更改
 if num_qnn_qubits <= 10:
     try:
         fig_ans, ax_ans = plt.subplots()
@@ -475,15 +413,15 @@ else:
 qnn_hybrid_circuit = QuantumCircuit(num_qnn_qubits)
 qnn_hybrid_circuit.compose(feature_map, inplace=True)
 qnn_hybrid_circuit.compose(ansatz, inplace=True)
-qnn_hybrid_circuit.name = "HybridQNN_Circuit_MultiClass"
+qnn_hybrid_circuit.name = "HybridQNN_Circuit_MultiClass_FM3_Ans5" # 更新名称
 
 observables_list = []
 for i in range(num_unique_classes):
     pauli_string_list = ['I'] * num_qnn_qubits
-    qubit_index_for_obs = i % num_qnn_qubits # Cycle through qubits if classes > qubits
+    qubit_index_for_obs = i % num_qnn_qubits 
     pauli_string_list[qubit_index_for_obs] = 'Z'
     observables_list.append(SparsePauliOp("".join(pauli_string_list)))
-    if i >= num_qnn_qubits:
+    if i >= num_qnn_qubits and num_qnn_qubits > 0 : 
         logging.warning(f"类别 {i} 的可观测量复用了量子比特 {qubit_index_for_obs} 的Z算符，因为量子比特数不足。")
 
 
@@ -492,33 +430,22 @@ qnn_estimator = EstimatorQNN(
     observables=observables_list,
     input_params=feature_map.parameters,
     weight_params=ansatz.parameters,
-    # input_gradients=True # 尝试启用梯度，如果优化器支持
 )
 logging.info(f"EstimatorQNN 已定义，使用 {len(observables_list)} 个可观测量。")
 
 initial_point_qnn = None
 logging.info("QNN将使用随机初始点。")
 
-# <<< 使用自定义交叉熵损失 >>>
-custom_loss = CustomMultiClassCrossEntropyLoss(num_classes=num_unique_classes, neural_network=qnn_estimator)
 
 qnn_classifier = NeuralNetworkClassifier(
     neural_network=qnn_estimator,
-    optimizer=COBYLA(maxiter=100), # 或您期望的迭代次数
+    optimizer=COBYLA(maxiter=300), # 修改：增加 COBYLA 的迭代次数
     callback=simple_text_callback,
-    loss='cross_entropy',  # <<< 使用字符串 'cross_entropy'
-    one_hot=True,          # <<< 将 one_hot 设置为 True
+    loss='cross_entropy',  
+    one_hot=True,          
     initial_point=initial_point_qnn,
 )
-# logging.info("NeuralNetworkClassifier (多分类，使用自定义交叉熵损失) 已定义。")
-logging.info("NeuralNetworkClassifier (多分类，使用内置 'cross_entropy' 损失，one_hot=True) 已定义。") # 更新日志信息
-
-# 如果 neural_network 在创建分类器后被修改 (例如通过 set_interpret)，
-# 确保自定义损失函数中的 _neural_network 引用也是最新的。
-# 在这个结构中，qnn_estimator 在创建 custom_loss 和 qnn_classifier 时是同一个实例。
-
-# logging.info("NeuralNetworkClassifier (多分类，使用自定义交叉熵损失) 已定义。")
-logging.info("现在使用的是cross_entropy损失")
+logging.info("NeuralNetworkClassifier (多分类，使用内置 'cross_entropy' 损失，one_hot=True, COBYLA maxiter=300) 已定义。")
 
 # === 阶段六：使用真实人脸特征训练和评估QNN (多分类) ===
 logging.info("\n--- 阶段六：使用真实人脸特征训练和评估QNN (多分类) ---")
@@ -539,9 +466,10 @@ if objective_func_vals:
     try:
         plt.figure(figsize=(10, 6))
         plt.plot(range(1, len(objective_func_vals) + 1), objective_func_vals, marker='o', linestyle='-')
-        plt.title('QNN (多分类，自定义交叉熵) 训练过程中的目标函数值')
+        plt.title('QNN (多分类，内置CE, FM_reps3, Ans_reps5, COBYLA300) 训练目标函数值') # 更新标题
         plt.xlabel('迭代次数'); plt.ylabel('目标函数值 (交叉熵)'); plt.grid(True)
-        plt.savefig(os.path.join(output_image_folder, "06_QNN_多分类_自定义交叉熵_训练目标函数值曲线.png"))
+        # 更新文件名以反映更改
+        plt.savefig(os.path.join(output_image_folder, "06_QNN_多分类_FM3_Ans5_COBYLA300_目标函数值.png"))
         plt.close()
     except Exception as e_plot_qnn_hist:
         logging.error(f"绘制QNN目标函数曲线失败: {e_plot_qnn_hist}")
