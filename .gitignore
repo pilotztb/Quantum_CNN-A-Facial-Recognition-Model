@@ -17,6 +17,9 @@ models_multiclass/
 所有输出图像/
 所有输出图像_multiclass/
 
+# 历史版本
+history_version/
+
 # 一些文件
 data.csv
 lfw_5class_data.csv
