@@ -1,15 +1,25 @@
 # 默认忽略日志的上传
-logs/
+log/
+log_multiclass/
 
 # 默认忽略数据集的上传
 Datasets/
 LFW_processed_images_pil/
 LFW_raw_images_pil/
+LFW_processed_images_multiclass/
+LFW_raw_images_multiclass/
 
 # 默认忽略模型的上传
 models/
+models_multiclass/
 
 # 默认忽略所有输出图像
 所有输出图像/
+所有输出图像_multiclass/
 
+# 一些文件
+data.csv
+lfw_5class_data.csv
+lfw_label_map.json
+lfw_subset_data.csv
 
