@@ -1,5 +1,5 @@
-# FR_Qcnn_multiclass.py (修改版，调整QNN电路参数)
-# 修改：提高特征维度，num_qnn_input_features
+# FR_Qcnn_multiclass.py (修改版，调整QNN电路参数、特征维度和绘图)
+
 import matplotlib
 matplotlib.use('Agg') # 必须在导入pyplot之前
 import matplotlib.pyplot as plt
@@ -10,8 +10,18 @@ from datetime import datetime
 import json # 用于加载标签映射
 import numpy as np # 确保导入numpy
 
+# 设置 Matplotlib 支持中文显示
+try:
+    # 提供一个字体列表，Matplotlib会依次尝试直到找到可用的
+    font_list = ['Noto Sans CJK SC', 'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei']
+    plt.rcParams['font.sans-serif'] = font_list
+    plt.rcParams['axes.unicode_minus'] = False  # 解决保存图像是负号'-'显示为方块的问题
+    logging.info(f"Matplotlib 中文字体尝试列表设置为: {font_list}")
+except Exception as e_font:
+    logging.warning(f"设置 Matplotlib 中文字体失败: {e_font}。中文可能无法正常显示。")
+
 # --- 日志记录设置 ---
-log_folder = "log_multiclass" # 新的日志文件夹
+log_folder = "log_multiclass"
 if not os.path.exists(log_folder):
     os.makedirs(log_folder)
 log_filename_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -28,23 +38,21 @@ logging.basicConfig(
 
 import tensorflow as tf
 from qiskit import QuantumCircuit
-from qiskit_algorithms.optimizers import COBYLA # 或者其他优化器如 SPSA
+from qiskit_algorithms.optimizers import COBYLA 
 from qiskit.circuit.library import ZZFeatureMap, RealAmplitudes
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.utils import algorithm_globals
 from qiskit_machine_learning.algorithms.classifiers import NeuralNetworkClassifier
 from qiskit_machine_learning.neural_networks import EstimatorQNN
-from qiskit_machine_learning.algorithms.objective_functions import ObjectiveFunction # <<< 导入基类
-# from qiskit_machine_learning.utils.loss_functions import CrossEntropy # <<< Qiskit的交叉熵（可能需要看其具体实现）
+from qiskit_machine_learning.algorithms.objective_functions import ObjectiveFunction
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler, LabelEncoder
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, BatchNormalization, ReLU, Dropout, Flatten, Dense
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, BatchNormalization, Dropout, Flatten, Dense
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-# from tensorflow.keras.optimizers import RMSprop # Keras 3 中路径已更改
 
 import pandas as pd
 
@@ -55,12 +63,12 @@ if not sys.warnoptions:
 algorithm_globals.random_seed = 1
 
 # --- 全局配置 ---
-# 如果CNN特征提取部分已经满意，可以设置为False以节省时间
-FORCE_RETRAIN_CNN = True
+# 如果更改了 num_qnn_input_features，需要将此设置为 True 以重新训练CNN
+FORCE_RETRAIN_CNN = False     
 
-num_qnn_input_features = 64
+num_qnn_input_features = 8 
 logging.info(f"QNN将使用 {num_qnn_input_features} 个输入特征 (量子比特)。")
-output_image_folder = "所有输出图像_multiclass" # 新的图像输出文件夹
+output_image_folder = "所有输出图像_multiclass"
 if not os.path.exists(output_image_folder):
     os.makedirs(output_image_folder)
     logging.info(f"文件夹 '{output_image_folder}' 已创建。")
@@ -72,7 +80,6 @@ def simple_text_callback(weights, obj_func_eval):
 
 # === Softmax 函数 ===
 def stable_softmax(x, axis=-1):
-    """稳定的Softmax函数，避免数值溢出。"""
     e_x = np.exp(x - np.max(x, axis=axis, keepdims=True))
     return e_x / np.sum(e_x, axis=axis, keepdims=True)
 
@@ -158,11 +165,11 @@ logging.info(f'用于经典CNN的测试集尺寸 - {X_test_csv.shape}, {y_test_c
 # === 阶段二：训练经典CNN (直接输出低维特征) ===
 logging.info("\n--- 阶段二：训练经典CNN (新结构) 并提取特征 ---")
 
-models_dir = "models_multiclass" # 新的模型文件夹
+models_dir = "models_multiclass"
 if not os.path.exists(models_dir):
     os.makedirs(models_dir)
 
-fixed_best_cnn_model_filename = f"cnn_best_{num_unique_classes}class_model.keras"
+fixed_best_cnn_model_filename = f"cnn_best_{num_unique_classes}class_feat{num_qnn_input_features}_model.keras"
 checkpoint_path_cnn_to_load_or_save = os.path.join(models_dir, fixed_best_cnn_model_filename)
 
 model = None
@@ -195,7 +202,7 @@ if model is None:
                                        height_shift_range=0.1, shear_range=0.1, zoom_range=0.1, horizontal_flip=True)
     valid_datagen = ImageDataGenerator(rescale=1./255.)
 
-    model_train_name = f'FaceRec_CNN_MultiClass_{num_unique_classes}class_DirectLowDim_'+datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_train_name = f'FaceRec_CNN_MultiClass_{num_unique_classes}class_DirectLowDim_Feat{num_qnn_input_features}_'+datetime.now().strftime("%Y%m%d_%H%M%S")
     model = Sequential(name = model_train_name)
     model.add(Conv2D(32, kernel_size=3, activation='relu', input_shape=(100, 100, 1)))
     model.add(BatchNormalization())
@@ -211,7 +218,6 @@ if model is None:
     model.add(Dense(256, activation='relu'))
     model.add(BatchNormalization())
     model.add(Dropout(0.4))
-    # 使用 tanh 激活函数
     model.add(Dense(num_qnn_input_features, activation='tanh', name='dense_for_qnn_features'))
     model.add(BatchNormalization())
     model.add(Dense(num_unique_classes, activation='softmax', name='cnn_output_layer'))
@@ -229,9 +235,7 @@ if model is None:
         sys.stdout = original_stdout_cnn_summary
 
     learning_rate_cnn = 0.001
-    # Keras 3 直接使用 tf.keras.optimizers.RMSprop
     optimizer_cnn = tf.keras.optimizers.RMSprop(learning_rate=learning_rate_cnn)
-
     model.compile(loss='categorical_crossentropy', optimizer=optimizer_cnn, metrics=['accuracy'])
 
     ch_cnn = ModelCheckpoint(checkpoint_path_cnn_to_load_or_save, monitor='val_accuracy', verbose=1, save_best_only=True, mode='max')
@@ -240,7 +244,7 @@ if model is None:
     callbacks_list_cnn = [ch_cnn, es_cnn, learning_rate_reduction_cnn]
 
     logging.info("开始训练经典CNN模型 (多分类，用于直接提取低维特征)...")
-    epochs_cnn = 200
+    epochs_cnn = 100 # 您之前的代码这里是100
     batch_size_cnn = 32
     if len(X_train_csv) < batch_size_cnn :
         batch_size_cnn = max(1, len(X_train_csv) // 4)
@@ -280,9 +284,9 @@ if history_cnn_dict:
         plt.plot(history_cnn_dict['accuracy'], label='训练准确率')
         if 'val_accuracy' in history_cnn_dict:
             plt.plot(history_cnn_dict['val_accuracy'], label='验证准确率')
-        plt.title('经典CNN(多分类) 准确率曲线')
+        plt.title(f'经典CNN(多分类, {num_qnn_input_features}特征) 准确率曲线')
         plt.xlabel('Epoch'); plt.ylabel('准确率'); plt.legend(); plt.grid(True)
-        plt.savefig(os.path.join(output_image_folder, "02a_经典CNN_多分类_训练历史_准确率.png"))
+        plt.savefig(os.path.join(output_image_folder, f"02a_经典CNN_多分类_feat{num_qnn_input_features}_训练历史_准确率.png"))
         plt.close()
 
         plt.figure(figsize=(12, 5))
@@ -290,9 +294,9 @@ if history_cnn_dict:
         plt.plot(history_cnn_dict['loss'], label='训练损失')
         if 'val_loss' in history_cnn_dict:
             plt.plot(history_cnn_dict['val_loss'], label='验证损失')
-        plt.title('经典CNN(多分类) 损失曲线')
+        plt.title(f'经典CNN(多分类, {num_qnn_input_features}特征) 损失曲线')
         plt.xlabel('Epoch'); plt.ylabel('损失'); plt.legend(); plt.grid(True)
-        plt.savefig(os.path.join(output_image_folder, "02b_经典CNN_多分类_训练历史_损失.png"))
+        plt.savefig(os.path.join(output_image_folder, f"02b_经典CNN_多分类_feat{num_qnn_input_features}_训练历史_损失.png"))
         plt.close()
     except Exception as e_plot_hist:
         logging.error(f"绘制CNN训练历史图失败: {e_plot_hist}")
@@ -359,7 +363,6 @@ logging.info(f"提取到的低维深度特征形状: {all_face_low_dim_features.
 
 # === 阶段三：对CNN输出的低维特征进行缩放 ===
 logging.info("\n--- 阶段三：对CNN输出的低维特征进行缩放 ---")
-# 使用 tanh 的输出特性缩放到 [0, np.pi]
 scaler = MinMaxScaler(feature_range=(0, np.pi)) 
 scaled_features_for_qnn = scaler.fit_transform(all_face_low_dim_features)
 logging.info(f"CNN直接输出并缩放后的特征形状: {scaled_features_for_qnn.shape}")
@@ -379,73 +382,127 @@ logging.info(f"QNN测试数据形状: X={X_qnn_test.shape}, y={y_qnn_test.shape}
 logging.info("\n--- 阶段五：定义和构建QNN的量子电路 (多分类) ---")
 num_qnn_qubits = num_qnn_input_features
 
-# 修改：增加 ZZFeatureMap 的 reps
-feature_map = ZZFeatureMap(feature_dimension=num_qnn_qubits, reps=3, entanglement='linear') # reps 从 2 改为 3
-feature_map.name = "ZZFeatureMap_MultiClass_reps3" # 更新名称以反映更改
-if num_qnn_qubits <= 10:
+# 根据量子比特数调整reps
+fm_reps = 2 
+ans_reps = 3
+if num_qnn_qubits == 8:
+    fm_reps = 3
+    ans_reps = 5
+elif num_qnn_qubits > 8 and num_qnn_qubits <=12: # 例如10或12个量子比特
+    fm_reps = 2
+    ans_reps = 4
+# 对于更多的量子比特，可能需要更小的reps以控制复杂度，或者更长的训练时间
+logging.info(f"QNN电路参数: FeatureMap reps={fm_reps}, Ansatz reps={ans_reps}")
+
+
+feature_map = ZZFeatureMap(feature_dimension=num_qnn_qubits, reps=fm_reps, entanglement='linear')
+feature_map.name = f"ZZFeatureMap_MultiClass_q{num_qnn_qubits}_r{fm_reps}"
+
+circuit_draw_qubit_threshold = 10 
+plot_scale_factor = 0.7 
+if num_qnn_qubits > 8:
+    plot_scale_factor = 0.5 
+elif num_qnn_qubits <= 4:
+    plot_scale_factor = 0.8
+
+# 仅在量子比特数较少时绘制分解图，较大时绘制未分解图或跳过
+if num_qnn_qubits <= circuit_draw_qubit_threshold:
     try:
-        fig_fm, ax_fm = plt.subplots()
-        feature_map.decompose().draw("mpl", ax=ax_fm, fold=-1)
-        fig_fm.savefig(os.path.join(output_image_folder, f"03_QNN_{feature_map.name}({num_qnn_qubits}qubits).png"))
+        fig_fm_width = max(12, num_qnn_qubits * 2.0) 
+        fig_fm_height = max(7, num_qnn_qubits * 1.0) 
+        fig_fm, ax_fm = plt.subplots(figsize=(fig_fm_width, fig_fm_height))
+        
+        if num_qnn_qubits > 6: # 当量子比特多于6个时，不分解以保持清晰
+            logging.info(f"量子比特数 ({num_qnn_qubits}) > 6，特征图将不分解进行绘制。")
+            feature_map.draw("mpl", ax=ax_fm, fold=-1, scale=plot_scale_factor)
+        else:
+            logging.info(f"量子比特数 ({num_qnn_qubits}) <= 6，特征图将分解后进行绘制。")
+            feature_map.decompose().draw("mpl", ax=ax_fm, fold=-1, scale=plot_scale_factor)
+
+        fig_fm.suptitle(f"特征映射: {feature_map.name}", fontsize=16) 
+        fig_fm.tight_layout(rect=[0, 0, 1, 0.96]) 
+        fig_fm.savefig(os.path.join(output_image_folder, f"03_QNN_{feature_map.name}.png"))
         plt.close(fig_fm)
         logging.info(f"QNN 特征映射 ({feature_map.name}) 已创建并保存图像。")
     except Exception as e_draw_fm:
         logging.error(f"绘制 FeatureMap 出错: {e_draw_fm}. 跳过绘图。")
 else:
-    logging.info(f"QNN 特征映射 ({feature_map.name}) 已创建 (量子比特数 {num_qnn_qubits} 较大，跳过分解绘图)。")
+    logging.info(f"QNN 特征映射 ({feature_map.name}) 已创建 (量子比特数 {num_qnn_qubits} 较大，跳过详细绘图)。")
 
-# 修改：增加 RealAmplitudes 的 reps
-ansatz = RealAmplitudes(num_qnn_qubits, reps=5, entanglement='full') # reps 从 4 改为 5
-ansatz.name = "RealAmplitudes_MultiClass_reps5" # 更新名称以反映更改
-if num_qnn_qubits <= 10:
+
+ansatz = RealAmplitudes(num_qnn_qubits, reps=ans_reps, entanglement='full')
+ansatz.name = f"RealAmplitudes_MultiClass_q{num_qnn_qubits}_r{ans_reps}"
+if num_qnn_qubits <= circuit_draw_qubit_threshold:
     try:
-        fig_ans, ax_ans = plt.subplots()
-        ansatz.decompose().draw("mpl", ax=ax_ans, fold=-1)
-        fig_ans.savefig(os.path.join(output_image_folder, f"04_QNN_{ansatz.name}({num_qnn_qubits}qubits).png"))
+        fig_ans_width = max(12, num_qnn_qubits * 2.2) 
+        fig_ans_height = max(8, num_qnn_qubits * 1.2)
+        fig_ans, ax_ans = plt.subplots(figsize=(fig_ans_width, fig_ans_height))
+
+        if num_qnn_qubits > 6: # 当量子比特多于6个时，不分解
+            logging.info(f"量子比特数 ({num_qnn_qubits}) > 6，Ansatz将不分解进行绘制。")
+            ansatz.draw("mpl", ax=ax_ans, fold=-1, scale=plot_scale_factor)
+        else:
+            logging.info(f"量子比特数 ({num_qnn_qubits}) <= 6，Ansatz将分解后进行绘制。")
+            ansatz.decompose().draw("mpl", ax=ax_ans, fold=-1, scale=plot_scale_factor)
+        
+        fig_ans.suptitle(f"Ansatz: {ansatz.name}", fontsize=16)
+        fig_ans.tight_layout(rect=[0, 0, 1, 0.96])
+        fig_ans.savefig(os.path.join(output_image_folder, f"04_QNN_{ansatz.name}.png"))
         plt.close(fig_ans)
         logging.info(f"QNN Ansatz ({ansatz.name}) 已创建并保存图像。")
     except Exception as e_draw_ansatz:
         logging.error(f"绘制 Ansatz 出错: {e_draw_ansatz}. 跳过绘图。")
 else:
-    logging.info(f"QNN Ansatz ({ansatz.name}) 已创建 (量子比特数 {num_qnn_qubits} 较大，跳过分解绘图)。")
-
+    logging.info(f"QNN Ansatz ({ansatz.name}) 已创建 (量子比特数 {num_qnn_qubits} 较大，跳过详细绘图)。")
 
 qnn_hybrid_circuit = QuantumCircuit(num_qnn_qubits)
 qnn_hybrid_circuit.compose(feature_map, inplace=True)
 qnn_hybrid_circuit.compose(ansatz, inplace=True)
-qnn_hybrid_circuit.name = "HybridQNN_Circuit_MultiClass_FM3_Ans5" # 更新名称
+qnn_hybrid_circuit.name = f"HybridQNN_q{num_qnn_qubits}_fm{fm_reps}_ans{ans_reps}"
 
 observables_list = []
 for i in range(num_unique_classes):
-    pauli_string_list = ['I'] * num_qnn_qubits
+    pauli_string_list = ['I'] * num_qnn_qubits 
     qubit_index_for_obs = i % num_qnn_qubits 
     pauli_string_list[qubit_index_for_obs] = 'Z'
     observables_list.append(SparsePauliOp("".join(pauli_string_list)))
     if i >= num_qnn_qubits and num_qnn_qubits > 0 : 
         logging.warning(f"类别 {i} 的可观测量复用了量子比特 {qubit_index_for_obs} 的Z算符，因为量子比特数不足。")
 
+# 传递给EstimatorQNN的电路，可以选择是否在这里分解一次，以避免后续重复分解
+# 如果绘图部分已经不分解了，这里可以考虑分解，或者完全不分解让Qiskit内部处理
+# 为了减少“卡顿”感，如果之前绘图没分解，这里也暂时不分解或只分解一次。
+# EstimatorQNN内部执行时仍然需要分解的电路。
+qnn_circuit_for_estimator = qnn_hybrid_circuit.decompose() # 确保QNN使用分解后的电路进行计算
+logging.info(f"QNN混合电路 '{qnn_hybrid_circuit.name}' 已创建并分解用于Estimator。")
+
 
 qnn_estimator = EstimatorQNN(
-    circuit=qnn_hybrid_circuit.decompose(),
+    circuit=qnn_circuit_for_estimator, 
     observables=observables_list,
-    input_params=feature_map.parameters,
-    weight_params=ansatz.parameters,
+    input_params=feature_map.parameters, # 这些参数来自未分解的feature_map
+    weight_params=ansatz.parameters,   # 这些参数来自未分解的ansatz
 )
 logging.info(f"EstimatorQNN 已定义，使用 {len(observables_list)} 个可观测量。")
 
 initial_point_qnn = None
 logging.info("QNN将使用随机初始点。")
 
+qnn_maxiter = 100 
+if num_qnn_qubits == 8: 
+    qnn_maxiter = 300 
+elif num_qnn_qubits > 8 and num_qnn_qubits <= 12:
+    qnn_maxiter = 150
 
 qnn_classifier = NeuralNetworkClassifier(
     neural_network=qnn_estimator,
-    optimizer=COBYLA(maxiter=300), # 修改：增加 COBYLA 的迭代次数
+    optimizer=COBYLA(maxiter=qnn_maxiter),
     callback=simple_text_callback,
     loss='cross_entropy',  
     one_hot=True,          
     initial_point=initial_point_qnn,
 )
-logging.info("NeuralNetworkClassifier (多分类，使用内置 'cross_entropy' 损失，one_hot=True, COBYLA maxiter=300) 已定义。")
+logging.info(f"NeuralNetworkClassifier (多分类，使用内置 'cross_entropy' 损失，one_hot=True, COBYLA maxiter={qnn_maxiter}) 已定义。")
 
 # === 阶段六：使用真实人脸特征训练和评估QNN (多分类) ===
 logging.info("\n--- 阶段六：使用真实人脸特征训练和评估QNN (多分类) ---")
@@ -464,12 +521,13 @@ except Exception as e_qnn_fit:
 
 if objective_func_vals:
     try:
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(10, 6)) 
         plt.plot(range(1, len(objective_func_vals) + 1), objective_func_vals, marker='o', linestyle='-')
-        plt.title('QNN (多分类，内置CE, FM_reps3, Ans_reps5, COBYLA300) 训练目标函数值') # 更新标题
+        plot_title = f'QNN (CE, Q{num_qnn_qubits}, FM_r{fm_reps}, Ans_r{ans_reps}, COBYLA{qnn_maxiter}) 目标函数值'
+        plt.title(plot_title)
         plt.xlabel('迭代次数'); plt.ylabel('目标函数值 (交叉熵)'); plt.grid(True)
-        # 更新文件名以反映更改
-        plt.savefig(os.path.join(output_image_folder, "06_QNN_多分类_FM3_Ans5_COBYLA300_目标函数值.png"))
+        plot_filename = f"06_QNN_Q{num_qnn_qubits}_FM{fm_reps}_Ans{ans_reps}_COBYLA{qnn_maxiter}_ObjFunc.png"
+        plt.savefig(os.path.join(output_image_folder, plot_filename))
         plt.close()
     except Exception as e_plot_qnn_hist:
         logging.error(f"绘制QNN目标函数曲线失败: {e_plot_qnn_hist}")
