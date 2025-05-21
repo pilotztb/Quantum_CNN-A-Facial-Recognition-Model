@@ -1,0 +1,12 @@
+# 默认忽略日志的上传
+logs/
+
+# 默认忽略数据集的上传
+Datasets/
+LFW_processed_images_pil/
+LFW_raw——images_pil/
+
+# 默认忽略模型的上传
+models/
+
+
